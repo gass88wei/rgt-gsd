@@ -310,7 +310,7 @@ func recoverCmd() *cobra.Command {
 			if plan.Action == "rewind" && failedStep != "" {
 				fmt.Print("\nExecute rewind? [y/N]: ")
 				var answer string
-				fmt.Scanln(&answer)
+				_, _ = fmt.Scanln(&answer)
 				if answer == "y" || answer == "Y" {
 					if err := p.ExecuteRewind(ctx, projectDir, plan); err != nil {
 						return err
