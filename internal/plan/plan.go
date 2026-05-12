@@ -43,6 +43,10 @@ type Plan interface {
 
 	// Next returns the next unfinished task.
 	Next(projectRoot string) (Step, error)
+
+	// MarkDone marks a task as complete in ROADMAP.md.
+	// taskName is matched as a prefix.
+	MarkDone(projectRoot string, taskName string) error
 }
 
 type filePlan struct{}
@@ -110,6 +114,36 @@ func parseRoadmap(content string) Status {
 		}
 	}
 	return status
+}
+
+func (p *filePlan) MarkDone(projectRoot string, taskName string) error {
+	path := filepath.Join(projectRoot, "ROADMAP.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	newContent := markDone(content, taskName)
+	if newContent == content {
+		return nil // no change — already done
+	}
+	return os.WriteFile(path, []byte(newContent), 0o644)
+}
+
+func markDone(content, taskName string) string {
+	var result []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- [ ]") {
+			name := strings.TrimPrefix(trimmed, "- [ ]")
+			name = strings.TrimSpace(name)
+			if strings.HasPrefix(name, taskName) {
+				line = strings.Replace(line, "- [ ]", "- [x]", 1)
+			}
+		}
+		result = append(result, line)
+	}
+	return strings.Join(result, "\n")
 }
 
 func findNext(content string) Step {

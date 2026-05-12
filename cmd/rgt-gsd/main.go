@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +22,22 @@ var (
 	date    = "unknown"
 )
 
+func runGit(dir string, args ...string) error {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func runCmdOut(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "rgt-gsd",
@@ -26,6 +45,8 @@ func main() {
 		Long: `rgt-gsd combines re_gent (version control for AI agents) with plan tracking and recovery.
 
 It does NOT call LLM APIs. It is a toolbox your agent uses to:
+  - Archive completed tasks (archive + plan)
+  - Inspect step archives when debugging (inspect)
   - Record what it did (record)
   - Trace code to prompts (blame)
   - Rewind on failure (rewind)
@@ -33,6 +54,8 @@ It does NOT call LLM APIs. It is a toolbox your agent uses to:
 	}
 
 	rootCmd.AddCommand(initCmd())
+	rootCmd.AddCommand(archiveCmd())
+	rootCmd.AddCommand(inspectCmd())
 	rootCmd.AddCommand(recordCmd())
 	rootCmd.AddCommand(auditCmd())
 	rootCmd.AddCommand(planCmd())
@@ -330,6 +353,105 @@ func healthCmd() *cobra.Command {
 				fmt.Printf("rgt:       FAIL — %v\n", err)
 			} else {
 				fmt.Println("rgt:       OK")
+			}
+
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+// --- archive ---
+
+func archiveCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use:   "archive <task-name>",
+		Short: "Record step + mark task done in ROADMAP.md + git commit",
+		Long: `Completes a task: records a re_gent step, checks the task in ROADMAP.md,
+and creates a git commit linking the step hash.
+
+This keeps completed tasks out of the agent's context.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			taskName := args[0]
+			p := plan.New()
+			aud := auditor.New("")
+
+			hash, err := aud.Record(ctx, projectDir, auditor.StepInput{
+				Cause: auditor.Cause{
+					ToolName: "archive",
+					ArgsJSON: taskName,
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("record: %w", err)
+			}
+			shortHash := hash
+			if len(shortHash) >= 12 {
+				shortHash = shortHash[:12]
+			}
+
+			if err := p.MarkDone(projectDir, taskName); err != nil {
+				return fmt.Errorf("mark done: %w", err)
+			}
+
+			commitMsg := fmt.Sprintf("archive: %s [%s]", taskName, shortHash)
+			if err := runGit(projectDir, "add", "-A"); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: git add: %v\n", err)
+			}
+			if err := runGit(projectDir, "commit", "-m", commitMsg); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: git: %v\n", err)
+			}
+
+			fmt.Printf("archived [%s] %s\n", shortHash, taskName)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+// --- inspect ---
+
+func inspectCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use:   "inspect <hash>",
+		Short: "Open a step archive to see what changed and why",
+		Long: `Shows the full details of a recorded step: what files changed,
+what prompt caused it, and the diff. Use when debugging a failure.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			hash := args[0]
+			aud := auditor.New("")
+
+			steps, err := aud.Log(ctx, projectDir, "")
+			if err != nil {
+				return err
+			}
+
+			found := false
+			for _, s := range steps {
+				if strings.HasPrefix(s.Hash, hash) {
+					found = true
+					fmt.Printf("Step:     %s\n", s.Hash)
+					fmt.Printf("Tool:     %s\n", s.Cause.ToolName)
+					fmt.Printf("When:     %s\n", s.Timestamp.Format("2006-01-02 15:04:05"))
+					fmt.Println("---")
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("step %s not found in log", hash)
+			}
+
+			showOut, err := runCmdOut(ctx, projectDir, "rgt", "show", hash)
+			if err == nil {
+				fmt.Println(showOut)
 			}
 
 			return nil
