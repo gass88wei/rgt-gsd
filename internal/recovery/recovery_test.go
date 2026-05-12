@@ -21,15 +21,11 @@ func TestAnalyzeToolSchema(t *testing.T) {
 
 	plan := r.Analyze(ctx, recovery.RecoverableFailure{
 		ErrorType:  "tool_schema",
-		FailedUnit: "task-3",
 		FailedStep: "abc123",
 	})
 
 	if plan.Action != "retry" {
 		t.Errorf("expected retry, got %s", plan.Action)
-	}
-	if plan.ResumeFrom != "task-3" {
-		t.Errorf("expected task-3, got %s", plan.ResumeFrom)
 	}
 }
 
@@ -38,8 +34,7 @@ func TestAnalyzeNetwork(t *testing.T) {
 	ctx := context.Background()
 
 	plan := r.Analyze(ctx, recovery.RecoverableFailure{
-		ErrorType:  "network",
-		FailedUnit: "task-2",
+		ErrorType: "network",
 	})
 
 	if plan.Action != "retry" {
@@ -52,8 +47,7 @@ func TestAnalyzeDeterministic(t *testing.T) {
 	ctx := context.Background()
 
 	plan := r.Analyze(ctx, recovery.RecoverableFailure{
-		ErrorType:  "deterministic",
-		FailedUnit: "task-5",
+		ErrorType: "deterministic",
 	})
 
 	if plan.Action != "abort" {
@@ -99,72 +93,28 @@ func TestAnalyzeEmpty(t *testing.T) {
 	}
 }
 
-func TestExecuteRetry(t *testing.T) {
+func TestExecuteRewindNonRewind(t *testing.T) {
 	r := recovery.New()
 	ctx := context.Background()
 	aud := auditor.New("rgt")
 
-	plan := recovery.RecoveryPlan{
-		Action:     "retry",
-		ResumeFrom: "unit-42",
-	}
+	plan := recovery.RecoveryPlan{Action: "retry"}
 
-	resumeFrom, err := r.Execute(ctx, plan, aud, "/tmp", "test-session")
+	err := r.ExecuteRewind(ctx, plan, aud, "/tmp")
 	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	if resumeFrom != "unit-42" {
-		t.Errorf("expected unit-42, got %s", resumeFrom)
+		t.Fatalf("ExecuteRewind should be nil for non-rewind plans: %v", err)
 	}
 }
 
-func TestExecuteAbort(t *testing.T) {
+func TestExecuteRewindEmptyHash(t *testing.T) {
 	r := recovery.New()
 	ctx := context.Background()
 	aud := auditor.New("rgt")
 
-	plan := recovery.RecoveryPlan{Action: "abort"}
+	plan := recovery.RecoveryPlan{Action: "rewind", RewindTo: ""}
 
-	resumeFrom, err := r.Execute(ctx, plan, aud, "/tmp", "test-session")
+	err := r.ExecuteRewind(ctx, plan, aud, "/tmp")
 	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	if resumeFrom != "" {
-		t.Errorf("expected empty resumeFrom for abort, got %s", resumeFrom)
-	}
-}
-
-func TestExecuteHuman(t *testing.T) {
-	r := recovery.New()
-	ctx := context.Background()
-	aud := auditor.New("rgt")
-
-	plan := recovery.RecoveryPlan{Action: "human"}
-
-	_, err := r.Execute(ctx, plan, aud, "/tmp", "test-session")
-	if err != recovery.ErrUnrecoverable {
-		t.Fatalf("expected ErrUnrecoverable, got %v", err)
-	}
-}
-
-func TestExecuteRewindNoRGT(t *testing.T) {
-	r := recovery.New()
-	ctx := context.Background()
-	aud := auditor.New("rgt")
-
-	plan := recovery.RecoveryPlan{
-		Action:     "rewind",
-		RewindTo:   "abc123",
-		ResumeFrom: "unit-10",
-	}
-
-	resumeFrom, err := r.Execute(ctx, plan, aud, "/tmp", "test-session")
-	if err != nil {
-		// rgt not installed, rewind fails — expected
-		t.Logf("Execute rewind error (expected if rgt not installed): %v", err)
-		return
-	}
-	if resumeFrom != "unit-10" {
-		t.Errorf("expected unit-10, got %s", resumeFrom)
+		t.Fatalf("ExecuteRewind should be nil for empty hash: %v", err)
 	}
 }

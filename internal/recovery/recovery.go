@@ -17,31 +17,27 @@ func (r *defaultRecovery) Analyze(ctx context.Context, failure RecoverableFailur
 	switch failure.ErrorType {
 	case "tool_schema":
 		return RecoveryPlan{
-			Action:     "retry",
-			ResumeFrom: failure.FailedUnit,
-			Reason:    "tool schema mismatch, retry may succeed with corrected schema",
+			Action: "retry",
+			Reason: "tool schema mismatch, retry may succeed with corrected schema",
 		}
 
 	case "policy_block":
 		return RecoveryPlan{
-			Action:     "rewind",
-			RewindTo:   failure.FailedStep,
-			ResumeFrom: failure.FailedUnit,
-			Reason:    "policy blocked execution; rewinding to re-attempt with adjusted policy",
+			Action:   "rewind",
+			RewindTo: failure.FailedStep,
+			Reason:   "policy blocked execution; rewinding to re-attempt with adjusted policy",
 		}
 
 	case "worktree_invalid":
 		return RecoveryPlan{
-			Action:     "rewind",
-			ResumeFrom: failure.FailedUnit,
-			Reason:    "worktree is invalid; rewinding to rebuild worktree state",
+			Action: "rewind",
+			Reason: "worktree is invalid; rewinding to rebuild worktree state",
 		}
 
 	case "network":
 		return RecoveryPlan{
-			Action:     "retry",
-			ResumeFrom: failure.FailedUnit,
-			Reason:    "transient network error, retry expected to succeed",
+			Action: "retry",
+			Reason: "transient network error, retry expected to succeed",
 		}
 
 	case "provider":
@@ -49,56 +45,38 @@ func (r *defaultRecovery) Analyze(ctx context.Context, failure RecoverableFailur
 			return RecoveryPlan{
 				Action:    "abort",
 				Reason:    "provider rate limit or quota exhausted",
-				HumanNote: "Provider quota exhausted. Wait for quota reset then run 'rgt-gsd recover' to resume.",
+				HumanNote: "Provider quota exhausted. Wait for quota reset then retry.",
 			}
 		}
 		return RecoveryPlan{
-			Action:     "retry",
-			ResumeFrom: failure.FailedUnit,
-			Reason:    "provider error, retry may succeed",
+			Action: "retry",
+			Reason: "provider error, retry may succeed",
 		}
 
 	case "deterministic":
 		return RecoveryPlan{
 			Action:    "abort",
 			Reason:    "deterministic failure, retry will not help",
-			HumanNote: "This is a deterministic failure. Check the error message and fix the underlying issue before resuming.",
+			HumanNote: "This is a deterministic failure. Fix the underlying issue before retrying.",
 		}
 
 	default:
 		return RecoveryPlan{
 			Action:    "human",
 			Reason:    "unknown error type, human review needed",
-			HumanNote: "GSd-2 encountered an unexpected error. Review the error and decide whether to retry, rewind, or skip.",
+			HumanNote: "Unexpected error. Review and decide whether to retry, rewind, or skip.",
 		}
 	}
 }
 
-func (r *defaultRecovery) Execute(ctx context.Context, plan RecoveryPlan, aud auditor.Auditor, projectRoot, sessionID string) (string, error) {
-	switch plan.Action {
-	case "rewind":
-		if plan.RewindTo != "" {
-			if err := aud.Rewind(ctx, projectRoot, plan.RewindTo); err != nil {
-				return "", ErrRewindFailed
-			}
-		}
-		return plan.ResumeFrom, nil
-
-	case "retry":
-		return plan.ResumeFrom, nil
-
-	case "skip":
-		return plan.ResumeFrom, nil
-
-	case "abort":
-		return "", nil
-
-	case "human":
-		return "", ErrUnrecoverable
-
-	default:
-		return "", ErrUnrecoverable
+func (r *defaultRecovery) ExecuteRewind(ctx context.Context, plan RecoveryPlan, aud auditor.Auditor, projectRoot string) error {
+	if plan.Action != "rewind" || plan.RewindTo == "" {
+		return nil
 	}
+	if err := aud.Rewind(ctx, projectRoot, plan.RewindTo); err != nil {
+		return ErrRewindFailed
+	}
+	return nil
 }
 
 func containsFold(s, substr string) bool {

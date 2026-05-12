@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type rgtAuditor struct {
@@ -58,13 +59,15 @@ func (a *rgtAuditor) Init(ctx context.Context, projectRoot string) error {
 }
 
 func (a *rgtAuditor) Record(ctx context.Context, projectRoot string, input StepInput) (string, error) {
-	// rgt hook reads payload from stdin (Claude Code PostToolUse format)
+	// rgt hook reads PostToolUse payload from stdin, writes to .regent/
+	// Hook doesn't output hash on stdout — we get it from rgt log afterwards.
 	payload := map[string]interface{}{
-		"session_id": input.SessionID,
-		"tool_name":  input.Cause.ToolName,
-		"tool_use_id": input.Cause.ToolUseID,
-		"args":       input.Cause.ArgsJSON,
-		"result":     input.Cause.ResultJSON,
+		"session_id":   input.SessionID,
+		"tool_name":    input.Cause.ToolName,
+		"tool_use_id":  input.Cause.ToolUseID,
+		"tool_input":   input.Cause.ArgsJSON,
+		"tool_response": input.Cause.ResultJSON,
+		"cwd":          projectRoot,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
@@ -75,7 +78,14 @@ func (a *rgtAuditor) Record(ctx context.Context, projectRoot string, input StepI
 	if err != nil {
 		return "", fmt.Errorf("rgt record: %w: %s", err, string(out))
 	}
-	return strings.TrimSpace(string(out)), nil
+
+	// rgt hook succeeds silently. Get the latest step hash.
+	steps, logErr := a.Log(ctx, projectRoot, "")
+	if logErr != nil || len(steps) == 0 {
+		// Return empty — caller can handle
+		return "", nil
+	}
+	return steps[0].Hash, nil
 }
 
 func (a *rgtAuditor) Blame(ctx context.Context, projectRoot string, filePath string, line int) (BlameEntry, error) {
@@ -115,13 +125,28 @@ func (a *rgtAuditor) Log(ctx context.Context, projectRoot string, sessionID stri
 		return nil, fmt.Errorf("rgt log: %w: %s", err, string(out))
 	}
 
-	var steps []Step
 	if len(out) == 0 || strings.TrimSpace(string(out)) == "No sessions found." {
-		return steps, nil
+		return nil, nil
 	}
-	if err := json.Unmarshal(out, &steps); err != nil {
-		// Fallback: parse line by line
+	// rgt log --json returns {"session_id":"...","steps":[...]}
+	var wrapper struct {
+		Steps []struct {
+			Hash      string `json:"hash"`
+			Timestamp string `json:"timestamp"`
+			Tool      string `json:"tool"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(out, &wrapper); err != nil {
 		return nil, fmt.Errorf("rgt log parse: %w", err)
+	}
+	steps := make([]Step, 0, len(wrapper.Steps))
+	for _, s := range wrapper.Steps {
+		ts, _ := time.Parse(time.RFC3339, s.Timestamp)
+		steps = append(steps, Step{
+			Hash:      s.Hash,
+			Cause:     Cause{ToolName: s.Tool},
+			Timestamp: ts,
+		})
 	}
 	return steps, nil
 }
