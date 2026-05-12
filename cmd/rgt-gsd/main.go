@@ -366,7 +366,7 @@ type wipData struct {
 func saveWIP(dir, task string) error {
 	w := wipData{Task: task, StartedAt: time.Now().Format("15:04:05")}
 	data, _ := json.Marshal(w)
-	os.MkdirAll(filepath.Join(dir, ".rgt-gsd"), 0755)
+	_ = os.MkdirAll(filepath.Join(dir, ".rgt-gsd"), 0755)
 	return os.WriteFile(filepath.Join(dir, ".rgt-gsd", "wip.json"), data, 0644)
 }
 
