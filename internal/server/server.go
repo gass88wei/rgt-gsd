@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 
 	"github.com/gass88wei/rgt-gsd/internal/auditor"
 	"github.com/gass88wei/rgt-gsd/internal/plan"
@@ -33,21 +32,6 @@ type rpcResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
-}
-
-type rpcNotification struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-// MCP types
-type initializeParams struct {
-	ProtocolVersion string `json:"protocolVersion"`
-	ClientInfo      struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-	} `json:"clientInfo"`
 }
 
 type serverInfo struct {
@@ -98,8 +82,7 @@ type Server struct {
 	pln        plan.Plan
 	ws         workspace.Workspace
 	rec        recovery.Recovery
-	mu         sync.Mutex
-	w          io.Writer
+	w io.Writer
 }
 
 // ServeMCP starts the MCP stdio server. Blocks until stdin closes.

@@ -364,7 +364,7 @@ type wipData struct {
 }
 
 func saveWIP(dir, task string) error {
-	w := wipData{Task: task, StartedAt: fmt.Sprintf("%s", time.Now().Format("15:04:05"))}
+	w := wipData{Task: task, StartedAt: time.Now().Format("15:04:05")}
 	data, _ := json.Marshal(w)
 	os.MkdirAll(filepath.Join(dir, ".rgt-gsd"), 0755)
 	return os.WriteFile(filepath.Join(dir, ".rgt-gsd", "wip.json"), data, 0644)
@@ -495,13 +495,13 @@ func stepCmd() *cobra.Command {
 					return fmt.Errorf("mark done: %w", err)
 				}
 				commitMsg := fmt.Sprintf("archive: %s [%s]", task, shortHash)
-				runGit(projectDir, "add", "-A")
-				runGit(projectDir, "commit", "-m", commitMsg)
+				_ = runGit(projectDir, "add", "-A")
+				_ = runGit(projectDir, "commit", "-m", commitMsg)
 				fmt.Printf("archived [%s] %s\n", shortHash, task)
 			} else if task != "" {
 				commitMsg := fmt.Sprintf("step: %s [%s]", desc, shortHash)
-				runGit(projectDir, "add", "-A")
-				runGit(projectDir, "commit", "-m", commitMsg)
+				_ = runGit(projectDir, "add", "-A")
+				_ = runGit(projectDir, "commit", "-m", commitMsg)
 				fmt.Printf("step %s [%s]\n", shortHash, desc)
 			} else if done {
 				fmt.Printf("archived [%s] %s\n", shortHash, desc)
