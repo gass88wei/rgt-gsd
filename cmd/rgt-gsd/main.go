@@ -580,27 +580,76 @@ func healthCmd() *cobra.Command {
 	var projectDir string
 	cmd := &cobra.Command{
 		Use:   "health",
-		Short: "Check workspace, rgt, and gsd-pi availability",
+		Short: "Diagnose workspace, rgt, ROADMAP, WIP, and conflicts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			ws := workspace.New(projectDir)
+			issues := 0
 
+			// 1. Git workspace
+			ws := workspace.New(projectDir)
 			clean, err := ws.IsClean(ctx)
 			if err != nil {
-				fmt.Printf("workspace: FAIL — %v\n", err)
+				fmt.Printf("git:       FAIL — %v\n", err)
+				issues++
 			} else if clean {
-				fmt.Println("workspace: OK (clean)")
+				fmt.Println("git:       OK (clean)")
 			} else {
-				fmt.Println("workspace: WARN (uncommitted changes)")
+				fmt.Println("git:       WARN (uncommitted changes)")
 			}
 
+			// 2. Conflicts
+			conflicts, _ := ws.Conflicts(ctx)
+			if len(conflicts) > 0 {
+				fmt.Printf("conflicts: WARN — %d unresolved\n", len(conflicts))
+				for _, c := range conflicts {
+					fmt.Printf("           %s (%s)\n", c.FilePath, c.Reason)
+				}
+				issues++
+			} else {
+				fmt.Println("conflicts: OK (none)")
+			}
+
+			// 3. rgt
 			aud := auditor.New("")
 			if err := aud.Init(ctx, projectDir); err != nil {
 				fmt.Printf("rgt:       FAIL — %v\n", err)
+				issues++
 			} else {
 				fmt.Println("rgt:       OK")
 			}
 
+			// 4. ROADMAP exists
+			roadmapExists := false
+			if _, err := os.Stat(filepath.Join(projectDir, "ROADMAP.md")); err == nil {
+				roadmapExists = true
+			}
+			if entries, err := os.ReadDir(filepath.Join(projectDir, "ROADMAP")); err == nil && len(entries) > 0 {
+				roadmapExists = true
+			}
+			if roadmapExists {
+				fmt.Println("roadmap:   OK")
+			} else {
+				fmt.Println("roadmap:   WARN — not found")
+			}
+
+			// 5. WIP reconcile
+			drifts, _ := state.Reconcile(projectDir)
+			if len(drifts) > 0 {
+				for _, d := range drifts {
+					fmt.Printf("wip:       FIXED — %s\n", d.Detail)
+				}
+			} else {
+				w, _ := loadWIP(projectDir)
+				if w.Task != "" {
+					fmt.Printf("wip:       %s\n", w.Task)
+				} else {
+					fmt.Println("wip:       OK (idle)")
+				}
+			}
+
+			if issues > 0 {
+				fmt.Printf("\n%d issue(s) found.\n", issues)
+			}
 			return nil
 		},
 	}
