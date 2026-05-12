@@ -68,6 +68,8 @@ It does NOT call LLM APIs. It is a toolbox your agent uses to:
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(serveCmd())
 	rootCmd.AddCommand(rewindCmd())
+	rootCmd.AddCommand(worktreeCmd())
+	rootCmd.AddCommand(knowledgeCmd())
 	rootCmd.AddCommand(archiveCmd())
 	rootCmd.AddCommand(stepCmd())
 	rootCmd.AddCommand(inspectCmd())
@@ -194,6 +196,76 @@ func rewindCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview what would change")
+	return cmd
+}
+
+// --- worktree ---
+
+func worktreeCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "worktree", Short: "Manage parallel task workspaces (git worktree)"}
+	cmd.AddCommand(worktreeAddCmd())
+	cmd.AddCommand(worktreeListCmd())
+	cmd.AddCommand(worktreeRemoveCmd())
+	return cmd
+}
+
+func worktreeAddCmd() *cobra.Command {
+	var projectDir, task string
+	cmd := &cobra.Command{
+		Use: "add <name>", Short: "Create worktree for a task",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			name := args[0]
+			wtPath := projectDir + "-wt-" + name
+			out, err := runCmdRaw(ctx, ".", "git", "-C", projectDir, "worktree", "add", wtPath, "-b", "rgt-gsd/"+name)
+			if err != nil {
+				return fmt.Errorf("git worktree add: %s", out)
+			}
+			fmt.Printf("Worktree: %s\n  cd %s\n", wtPath, wtPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	cmd.Flags().StringVarP(&task, "task", "t", "", "task name")
+	return cmd
+}
+
+func worktreeListCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use: "list", Short: "List worktrees",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			out, err := runCmdRaw(ctx, ".", "git", "-C", projectDir, "worktree", "list")
+			if err != nil {
+				return fmt.Errorf("git worktree list: %s", out)
+			}
+			fmt.Print(out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+func worktreeRemoveCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use: "remove <name>", Short: "Remove worktree",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			wtPath := projectDir + "-wt-" + args[0]
+			out, err := runCmdRaw(ctx, ".", "git", "-C", projectDir, "worktree", "remove", wtPath, "--force")
+			if err != nil {
+				return fmt.Errorf("git worktree remove: %s", out)
+			}
+			fmt.Printf("Removed: %s\n", wtPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
 	return cmd
 }
 
@@ -591,6 +663,30 @@ func stepCmd() *cobra.Command {
 	return cmd
 }
 
+// --- knowledge ---
+
+func knowledgeCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use:   "knowledge",
+		Short: "Show project knowledge graph (decisions from archive steps)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			entries, err := state.LoadKnowledge(projectDir)
+			if err != nil {
+				fmt.Println("No knowledge entries yet. Archive a task to start building the graph.")
+				return nil
+			}
+			fmt.Printf("%d entries:\n\n", len(entries))
+			for _, e := range entries {
+				fmt.Printf("[%s] %s\n  step: %s\n\n", e.Time, e.Task, e.Hash)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
 // --- archive ---
 
 func archiveCmd() *cobra.Command {
@@ -628,6 +724,8 @@ This keeps completed tasks out of the agent's context.`,
 			if err := p.MarkDone(projectDir, taskName); err != nil {
 				return fmt.Errorf("mark done: %w", err)
 			}
+
+			_ = state.SaveKnowledge(projectDir, taskName, shortHash, time.Now().Format("2006-01-02 15:04:05"))
 
 			commitMsg := fmt.Sprintf("archive: %s [%s]", taskName, shortHash)
 			if err := runGit(projectDir, "add", "-A"); err != nil {

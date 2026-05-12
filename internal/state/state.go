@@ -143,3 +143,37 @@ func readRoadmap(dir string) (string, error) {
 	}
 	return string(data), nil
 }
+
+// KnowledgeEntry is a single archived decision/finding.
+type KnowledgeEntry struct {
+	Task    string `json:"task"`
+	Hash    string `json:"hash"`
+	Time    string `json:"time"`
+}
+
+// SaveKnowledge appends a knowledge entry from an archive step.
+func SaveKnowledge(dir, task, hash, timestamp string) error {
+	_ = os.MkdirAll(filepath.Join(dir, ".rgt-gsd"), 0755)
+	path := filepath.Join(dir, ".rgt-gsd", "knowledge.json")
+
+	var entries []KnowledgeEntry
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &entries)
+	}
+	entries = append(entries, KnowledgeEntry{Task: task, Hash: hash, Time: timestamp})
+
+	data, _ := json.MarshalIndent(entries, "", "  ")
+	return os.WriteFile(path, data, 0644)
+}
+
+// LoadKnowledge returns all stored knowledge entries.
+func LoadKnowledge(dir string) ([]KnowledgeEntry, error) {
+	path := filepath.Join(dir, ".rgt-gsd", "knowledge.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []KnowledgeEntry
+	err = json.Unmarshal(data, &entries)
+	return entries, err
+}
