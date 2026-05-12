@@ -17,6 +17,7 @@ import (
 	"github.com/gass88wei/rgt-gsd/internal/plan"
 	"github.com/gass88wei/rgt-gsd/internal/recovery"
 	"github.com/gass88wei/rgt-gsd/internal/server"
+	"github.com/gass88wei/rgt-gsd/internal/state"
 	"github.com/gass88wei/rgt-gsd/internal/workspace"
 )
 
@@ -344,6 +345,12 @@ func planStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show current WIP (work-in-progress)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			drifts, _ := state.Reconcile(projectDir)
+			for _, d := range drifts {
+				if d.Fixed {
+					fmt.Printf("reconciled: %s\n", d.Detail)
+				}
+			}
 			w, err := loadWIP(projectDir)
 			if err != nil || w.Task == "" {
 				fmt.Println("No task in progress.")
