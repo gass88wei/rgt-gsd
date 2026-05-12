@@ -192,6 +192,7 @@ func auditBlameCmd() *cobra.Command {
 
 func auditLogCmd() *cobra.Command {
 	var projectDir, sessionID string
+	var detail bool
 	cmd := &cobra.Command{
 		Use:   "log",
 		Short: "Show step history",
@@ -204,12 +205,23 @@ func auditLogCmd() *cobra.Command {
 			}
 			for _, step := range steps {
 				fmt.Printf("%s  %s  %s\n", step.Hash[:8], step.Cause.ToolName, step.Timestamp.Format("15:04:05"))
+				if detail {
+					showOut, _ := runCmdOut(ctx, projectDir, "rgt", "show", step.Hash)
+					for _, line := range strings.Split(showOut, "\n") {
+						line = strings.TrimSpace(line)
+						if line != "" {
+							fmt.Printf("  %s\n", line)
+						}
+					}
+					fmt.Println()
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
 	cmd.Flags().StringVarP(&sessionID, "session", "s", "", "session ID filter")
+	cmd.Flags().BoolVar(&detail, "detail", false, "show full step details")
 	return cmd
 }
 
@@ -386,10 +398,12 @@ This keeps completed tasks out of the agent's context.`,
 			p := plan.New()
 			aud := auditor.New("")
 
+			diffOut, _ := runCmdOut(ctx, projectDir, "git", "diff", "--stat", "HEAD~1", "HEAD")
 			hash, err := aud.Record(ctx, projectDir, auditor.StepInput{
 				Cause: auditor.Cause{
-					ToolName: "archive",
-					ArgsJSON: taskName,
+					ToolName:   "archive",
+					ArgsJSON:   taskName,
+					ResultJSON: diffOut,
 				},
 			})
 			if err != nil {
@@ -447,12 +461,27 @@ what prompt caused it, and the diff. Use when debugging a failure.`,
 				}
 			}
 
-			// Always try rgt show — source of truth
+			// rgt show — step details from re_gent
 			showOut, err := runCmdOut(ctx, projectDir, "rgt", "show", hash)
 			if err != nil {
 				return fmt.Errorf("step %s not found: %w", hash, err)
 			}
 			fmt.Println(showOut)
+
+			// Git diff between step commits if available
+			prefix := hash
+			if len(prefix) > 12 {
+				prefix = prefix[:12]
+			}
+			gitLog, _ := runCmdOut(ctx, projectDir, "git", "log", "--oneline", "--grep", prefix, "-1")
+			if gitLog != "" {
+				fmt.Println()
+				fmt.Println("--- git diff ---")
+				diff, _ := runCmdOut(ctx, projectDir, "git", "diff", "--stat", "HEAD~1", "HEAD")
+				if diff != "" {
+					fmt.Println(diff)
+				}
+			}
 			return nil
 		},
 	}
