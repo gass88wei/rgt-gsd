@@ -69,7 +69,7 @@ func loadWIP(dir string) WIPData {
 		return WIPData{}
 	}
 	var w WIPData
-	json.Unmarshal(data, &w)
+	_ = json.Unmarshal(data, &w)
 	return w
 }
 
