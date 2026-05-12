@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	
 	"strings"
 	"time"
 )
@@ -92,27 +92,73 @@ func (a *rgtAuditor) Record(ctx context.Context, projectRoot string, input StepI
 }
 
 func (a *rgtAuditor) Blame(ctx context.Context, projectRoot string, filePath string, line int) (BlameEntry, error) {
-	cmd := exec.CommandContext(ctx, a.rgtPath, "blame", filePath, "-L", strconv.Itoa(line))
+	// Walk all steps from newest to oldest, find the first one where this file changed.
+	// Uses rgt show to inspect each step's tree snapshot.
+	steps, err := a.Log(ctx, projectRoot, "")
+	if err != nil {
+		return BlameEntry{}, err
+	}
+
+	var prevHash string
+	for _, step := range steps {
+		// rgt show <hash> outputs tree info including file blob hashes
+		showOut, showErr := a.rgtShow(ctx, projectRoot, step.Hash)
+		if showErr != nil {
+			continue
+		}
+		curHash := extractFileHash(showOut, filePath)
+		if curHash == "" {
+			continue
+		}
+		if prevHash == "" {
+			prevHash = curHash
+			continue
+		}
+		if curHash != prevHash {
+			return BlameEntry{
+				StepHash:  step.Hash,
+				SessionID: step.SessionID,
+				Cause:     step.Cause,
+				Timestamp: step.Timestamp,
+			}, nil
+		}
+		prevHash = curHash
+	}
+
+	// File unchanged across all steps — blame the oldest step that has it
+	if len(steps) > 0 {
+		last := steps[len(steps)-1]
+		return BlameEntry{
+			StepHash:  last.Hash,
+			SessionID: last.SessionID,
+			Cause:     last.Cause,
+			Timestamp: last.Timestamp,
+		}, nil
+	}
+
+	return BlameEntry{}, fmt.Errorf("no steps recorded for this project")
+}
+
+func (a *rgtAuditor) rgtShow(ctx context.Context, projectRoot, hash string) (string, error) {
+	cmd := exec.CommandContext(ctx, a.rgtPath, "show", hash)
 	cmd.Dir = projectRoot
 	out, err := cmd.Output()
-	if err != nil {
-		return BlameEntry{}, fmt.Errorf("rgt blame: %w: %s", err, string(out))
-	}
+	return strings.TrimSpace(string(out)), err
+}
 
-	// Parse rgt blame output: "hash session_id tool_name timestamp"
-	parts := strings.Fields(strings.TrimSpace(string(out)))
-	if len(parts) < 2 {
-		return BlameEntry{}, fmt.Errorf("unexpected rgt blame output: %s", string(out))
+// extractFileHash finds a file's blob hash from rgt show output.
+// rgt show prints lines like: "blob <hash> <path>"
+func extractFileHash(showOut, filePath string) string {
+	for _, line := range strings.Split(showOut, "\n") {
+		line = stripAnsi(line)
+		if strings.Contains(line, filePath) {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				return fields[1] // blob hash
+			}
+		}
 	}
-
-	entry := BlameEntry{StepHash: parts[0]}
-	if len(parts) > 1 {
-		entry.SessionID = parts[1]
-	}
-	if len(parts) > 2 {
-		entry.Cause.ToolName = parts[2]
-	}
-	return entry, nil
+	return ""
 }
 
 func (a *rgtAuditor) Log(ctx context.Context, projectRoot string, sessionID string) ([]Step, error) {
@@ -215,6 +261,7 @@ func (a *rgtAuditor) logSession(ctx context.Context, projectRoot, sessionID stri
 		ts, _ := time.Parse(time.RFC3339, s.Timestamp)
 		steps = append(steps, Step{
 			Hash:      s.Hash,
+			SessionID: sessionID,
 			Cause:     Cause{ToolName: s.Tool},
 			Timestamp: ts,
 		})
