@@ -91,75 +91,84 @@ func (p *Pipeline) processEvents(ctx context.Context, projectRoot string, events
 	retryCount := 0
 	const maxRetries = 3
 
-	for event := range events {
-		switch event.Type {
-		case "unit_completed":
-			hash, err := p.aud.Record(ctx, projectRoot, auditor.StepInput{
-				SessionID: result.SessionID,
-				Cause: auditor.Cause{
-					ToolName: event.UnitType,
-					ArgsJSON: fmt.Sprintf(`{"unit": "%s"}`, event.UnitID),
-				},
-			})
-			if err != nil {
-				return nil, fmt.Errorf("auditor record: %w", err)
-			}
-			mu.Lock()
-			result.Steps = append(result.Steps, auditor.Step{
-				Hash:      hash,
-				SessionID: result.SessionID,
-				Cause:     auditor.Cause{ToolName: event.UnitType},
-			})
-			result.Cost = event.Cost
-			retryCount = 0
-			mu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
 
-		case "blocked":
-			return result, fmt.Errorf("gsd-2 blocked: %s", event.UnitID)
-
-		case "error":
-			retryCount++
-			if retryCount > maxRetries {
-				return result, fmt.Errorf("retry limit exceeded, %d consecutive failures", maxRetries)
+		case event, ok := <-events:
+			if !ok {
+				return result, nil
 			}
 
-			failure := recovery.RecoverableFailure{
-				SessionID:    result.SessionID,
-				FailedUnit:   event.UnitID,
-				ErrorType:    classifyError(event.Error),
-				ErrorMessage: event.Error.Error(),
-				CostSoFar:    result.Cost,
+			switch event.Type {
+			case "unit_completed":
+				hash, err := p.aud.Record(ctx, projectRoot, auditor.StepInput{
+					SessionID: result.SessionID,
+					Cause: auditor.Cause{
+						ToolName: event.UnitType,
+						ArgsJSON: fmt.Sprintf(`{"unit": "%s"}`, event.UnitID),
+					},
+				})
+				if err != nil {
+					return nil, fmt.Errorf("auditor record: %w", err)
+				}
+				mu.Lock()
+				result.Steps = append(result.Steps, auditor.Step{
+					Hash:      hash,
+					SessionID: result.SessionID,
+					Cause:     auditor.Cause{ToolName: event.UnitType},
+				})
+				result.Cost = event.Cost
+				retryCount = 0
+				mu.Unlock()
+
+			case "blocked":
+				return result, fmt.Errorf("gsd-2 blocked: %s", event.UnitID)
+
+			case "error":
+				retryCount++
+				if retryCount > maxRetries {
+					return result, fmt.Errorf("retry limit exceeded, %d consecutive failures", maxRetries)
+				}
+
+				failure := recovery.RecoverableFailure{
+					SessionID:    result.SessionID,
+					FailedUnit:   event.UnitID,
+					ErrorType:    classifyError(event.Error),
+					ErrorMessage: event.Error.Error(),
+					CostSoFar:    result.Cost,
+				}
+
+				plan := p.rec.Analyze(ctx, failure)
+				if plan.Action == "human" || plan.Action == "abort" {
+					return result, fmt.Errorf("%w: %s", recovery.ErrUnrecoverable, plan.HumanNote)
+				}
+
+				resumeFrom, execErr := p.rec.Execute(ctx, plan, p.aud, projectRoot, result.SessionID)
+				if execErr != nil {
+					return result, fmt.Errorf("recovery execute: %w", execErr)
+				}
+
+				if resumeFrom == "" {
+					return result, fmt.Errorf("recovery returned empty resume point")
+				}
+
+				newEvents, resumeErr := p.exec.Resume(ctx, result.SessionID, resumeFrom)
+				if resumeErr != nil {
+					return result, fmt.Errorf("executor resume: %w", resumeErr)
+				}
+				events = newEvents
+				retryCount = 0
+
+			case "cancelled":
+				return result, nil
+
+			case "completed":
+				return result, nil
 			}
-
-			plan := p.rec.Analyze(ctx, failure)
-			if plan.Action == "human" || plan.Action == "abort" {
-				return result, fmt.Errorf("%w: %s", recovery.ErrUnrecoverable, plan.HumanNote)
-			}
-
-			resumeFrom, execErr := p.rec.Execute(ctx, plan, p.aud, projectRoot, result.SessionID)
-			if execErr != nil {
-				return result, fmt.Errorf("recovery execute: %w", execErr)
-			}
-
-			if resumeFrom == "" {
-				return result, fmt.Errorf("recovery returned empty resume point")
-			}
-
-			newEvents, resumeErr := p.exec.Resume(ctx, result.SessionID, resumeFrom)
-			if resumeErr != nil {
-				return result, fmt.Errorf("executor resume: %w", resumeErr)
-			}
-			events = newEvents
-
-		case "cancelled":
-			return result, nil
-
-		case "completed":
-			return result, nil
 		}
 	}
-
-	return result, nil
 }
 
 func classifyError(err error) string {

@@ -95,7 +95,7 @@ func TestPrepareReadOnlyParent(t *testing.T) {
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod failed: %v", err)
 	}
-	defer os.Chmod(dir, 0o700)
+	defer func() { _ = os.Chmod(dir, 0o700) }()
 
 	ws := workspace.New(filepath.Join(dir, "subdir"))
 	ctx := context.Background()
