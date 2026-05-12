@@ -251,6 +251,7 @@ func (a *rgtAuditor) logSession(ctx context.Context, projectRoot, sessionID stri
 			Hash      string `json:"hash"`
 			Timestamp string `json:"timestamp"`
 			Tool      string `json:"tool"`
+				Args      string `json:"args"`
 		} `json:"steps"`
 	}
 	if err := json.Unmarshal(out, &wrapper); err != nil {
@@ -262,7 +263,7 @@ func (a *rgtAuditor) logSession(ctx context.Context, projectRoot, sessionID stri
 		steps = append(steps, Step{
 			Hash:      s.Hash,
 			SessionID: sessionID,
-			Cause:     Cause{ToolName: s.Tool},
+			Cause:     Cause{ToolName: s.Tool, ArgsJSON: s.Args},
 			Timestamp: ts,
 		})
 	}
