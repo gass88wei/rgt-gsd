@@ -137,7 +137,9 @@ func markDone(content, taskName string) string {
 		if strings.HasPrefix(trimmed, "- [ ]") {
 			name := strings.TrimPrefix(trimmed, "- [ ]")
 			name = strings.TrimSpace(name)
-			if strings.Contains(name, taskName) || strings.Contains(taskName, name) {
+			cleanName := strings.ReplaceAll(name, "`", "")
+				cleanTask := strings.ReplaceAll(taskName, "`", "")
+				if strings.Contains(cleanName, cleanTask) || strings.Contains(cleanTask, cleanName) {
 				line = strings.Replace(line, "- [ ]", "- [x]", 1)
 			}
 		}
