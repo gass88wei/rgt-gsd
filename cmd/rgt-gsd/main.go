@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -167,9 +168,14 @@ func auditBlameCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			aud := auditor.New("")
-			var filePath string
-			var line int
-			if _, err := fmt.Sscanf(args[0], "%[^:]:%d", &filePath, &line); err != nil {
+			// Use LastIndex so paths with colons (like C:\...) work correctly
+			lastColon := strings.LastIndex(args[0], ":")
+			if lastColon < 0 {
+				return fmt.Errorf("expected format <file>:<line>, got %s", args[0])
+			}
+			filePath := args[0][:lastColon]
+			line, err := strconv.Atoi(args[0][lastColon+1:])
+			if err != nil {
 				return fmt.Errorf("expected format <file>:<line>, got %s", args[0])
 			}
 			entry, err := aud.Blame(ctx, projectDir, filePath, line)

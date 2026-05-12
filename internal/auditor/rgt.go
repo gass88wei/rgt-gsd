@@ -116,12 +116,76 @@ func (a *rgtAuditor) Blame(ctx context.Context, projectRoot string, filePath str
 }
 
 func (a *rgtAuditor) Log(ctx context.Context, projectRoot string, sessionID string) ([]Step, error) {
-	args := []string{"log", "--json"}
+	// If a specific session is requested, query it directly
 	if sessionID != "" {
-		args = append(args, "--session", sessionID)
+		return a.logSession(ctx, projectRoot, sessionID)
 	}
 
-	cmd := exec.CommandContext(ctx, a.rgtPath, args...)
+	// Otherwise enumerate all sessions, merge results
+	ids, err := a.listSessions(ctx, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	var all []Step
+	for _, id := range ids {
+		steps, err := a.logSession(ctx, projectRoot, id)
+		if err != nil {
+			continue // skip broken sessions
+		}
+		all = append(all, steps...)
+	}
+	return all, nil
+}
+
+// listSessions returns all session IDs from rgt sessions --json.
+func (a *rgtAuditor) listSessions(ctx context.Context, projectRoot string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, a.rgtPath, "sessions")
+	cmd.Dir = projectRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, nil
+	}
+
+	var ids []string
+	for _, line := range strings.Split(string(out), "\n") {
+		// Strip ANSI escape codes
+		line = stripAnsi(line)
+		line = strings.TrimSpace(line)
+		// Line format: "Session: <id>" (after stripping ANSI prefix junk)
+		if idx := strings.Index(line, "ession:"); idx >= 0 {
+			rest := line[idx+7:] // after "ession:" (handles "S" stripped by ANSI)
+			id := strings.TrimSpace(rest)
+			if id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, nil
+}
+
+// stripAnsi removes ANSI escape sequences from a string.
+func stripAnsi(s string) string {
+	for {
+		start := strings.Index(s, "\x1b[")
+		if start < 0 {
+			break
+		}
+		end := start + 2
+		for end < len(s) && s[end] != 'm' {
+			end++
+		}
+		if end < len(s) {
+			s = s[:start] + s[end+1:]
+		} else {
+			s = s[:start]
+		}
+	}
+	return s
+}
+
+func (a *rgtAuditor) logSession(ctx context.Context, projectRoot, sessionID string) ([]Step, error) {
+	cmd := exec.CommandContext(ctx, a.rgtPath, "log", "--json", "--session", sessionID)
 	cmd.Dir = projectRoot
 	out, err := cmd.Output()
 	if err != nil {
@@ -132,11 +196,10 @@ func (a *rgtAuditor) Log(ctx context.Context, projectRoot string, sessionID stri
 	if len(out) == 0 || outStr == "No sessions found." {
 		return nil, nil
 	}
-	// If rgt returns a plain text error
 	if !strings.HasPrefix(outStr, "{") {
 		return nil, nil
 	}
-	// rgt log --json returns {"session_id":"...","steps":[...]}
+
 	var wrapper struct {
 		Steps []struct {
 			Hash      string `json:"hash"`
