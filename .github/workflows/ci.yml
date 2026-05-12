@@ -43,9 +43,73 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download rgt binaries
+        run: |
+          mkdir -p dist/extras
+          RGT_VER=0.1.2
+          for pair in "linux_amd64:rgt" "linux_arm64:rgt" "darwin_amd64:rgt" "darwin_arm64:rgt" "windows_amd64:rgt.exe" "windows_arm64:rgt.exe"; do
+            os_arch="${pair%:*}"
+            name="${pair#*:}"
+            url="https://github.com/regent-vcs/regent/releases/download/v${RGT_VER}/rgt_${RGT_VER}_${os_arch}.tar.gz"
+            echo "Fetching $url"
+            curl -fsSL "$url" -o "/tmp/rgt-${os_arch}.tar.gz" || echo "SKIP: $os_arch not available"
+            tar -xzf "/tmp/rgt-${os_arch}.tar.gz" -C dist/extras/ "$name" 2>/dev/null && mv "dist/extras/$name" "dist/extras/rgt_${os_arch}_${name}" || true
+          done
+          ls -la dist/extras/
+
+      - name: Pack gsd-pi
+        run: |
+          npm pack gsd-pi@latest --pack-destination dist/extras/
+          mv dist/extras/gsd-pi-*.tgz dist/extras/gsd-pi-latest.tgz
+
+      - name: Generate setup scripts
+        run: |
+          # Windows setup
+          cat > dist/extras/setup.cmd << 'SETUPEOF'
+          @echo off
+          echo === rgt-gsd setup ===
+          echo.
+          if not exist "%~dp0rgt.exe" (
+            echo [SKIP] rgt.exe not bundled — install manually: go install github.com/regent-vcs/regent/cmd/rgt@latest
+          ) else (
+            echo [OK] rgt.exe found
+          )
+          if not exist "%~dp0gsd-pi-latest.tgz" (
+            echo [SKIP] gsd-pi not bundled — install manually: npm install -g gsd-pi
+          ) else (
+            echo Installing gsd-pi...
+            npm install -g "%~dp0gsd-pi-latest.tgz"
+            echo [OK] gsd-pi installed
+          )
+          echo.
+          echo Setup complete. Run 'rgt-gsd health' to verify.
+          SETUPEOF
+
+          # Unix setup
+          cat > dist/extras/setup.sh << 'SETUPEOF'
+          #!/bin/bash
+          set -e
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          echo "=== rgt-gsd setup ==="
+          if [ -f "$DIR/rgt" ]; then
+            cp "$DIR/rgt" /usr/local/bin/rgt 2>/dev/null && echo "[OK] rgt installed" || echo "[SKIP] rgt — copy manually from $DIR"
+          fi
+          if [ -f "$DIR/gsd-pi-latest.tgz" ]; then
+            npm install -g "$DIR/gsd-pi-latest.tgz" && echo "[OK] gsd-pi installed"
+          fi
+          echo "Setup complete. Run 'rgt-gsd health' to verify."
+          SETUPEOF
+          chmod +x dist/extras/setup.sh
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           args: release --clean
