@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -25,9 +28,10 @@ type sessionState struct {
 }
 
 // New creates an Executor backed by the gsd-pi CLI.
+// If gsdPath is empty, searches: same directory as running binary, then PATH.
 func New(gsdPath string) Executor {
 	if gsdPath == "" {
-		gsdPath = "gsd-pi"
+		gsdPath = resolveGsd()
 	}
 	return &gsdExecutor{
 		gsdPath:  gsdPath,
@@ -35,9 +39,39 @@ func New(gsdPath string) Executor {
 	}
 }
 
+func resolveGsd() string {
+	name := "gsd-pi"
+	if runtime.GOOS == "windows" {
+		name = "gsd-pi.cmd"
+	}
+
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+
+		// Also try "gsd" (gsd-pi installs as this too)
+		alt := filepath.Join(filepath.Dir(exe), "gsd")
+		if runtime.GOOS == "windows" {
+			alt += ".cmd"
+		}
+		if _, err := os.Stat(alt); err == nil {
+			return alt
+		}
+	}
+
+	// Fallback to PATH
+	if runtime.GOOS == "windows" {
+		return "gsd-pi.cmd"
+	}
+	return "gsd-pi"
+}
+
 func (e *gsdExecutor) HealthCheck(ctx context.Context) error {
 	_, err := exec.LookPath(e.gsdPath)
 	if err != nil {
+		// Also try without absolute path resolution
 		return fmt.Errorf("%w: %v", ErrGSDNotFound, err)
 	}
 	return nil
@@ -65,8 +99,6 @@ func (e *gsdExecutor) Run(ctx context.Context, projectDir string, plan PlanSpec)
 		command = "/gsd auto"
 	}
 
-	// gsd-pi --mode rpc is for MCP server mode.
-	// For simple CLI execution, use gsd-pi directly with the command.
 	cmd := exec.CommandContext(ctx, e.gsdPath, command)
 	cmd.Dir = projectDir
 
@@ -106,7 +138,6 @@ func (e *gsdExecutor) Run(ctx context.Context, projectDir string, plan PlanSpec)
 func (e *gsdExecutor) monitorProcess(ctx context.Context, state *sessionState, stdout, stderr io.ReadCloser) {
 	defer close(state.events)
 
-	// Fan-in stdout and stderr
 	done := make(chan struct{}, 2)
 	go func() {
 		e.parseOutput(state, stdout, "stdout")
@@ -117,10 +148,8 @@ func (e *gsdExecutor) monitorProcess(ctx context.Context, state *sessionState, s
 		done <- struct{}{}
 	}()
 
-	// Wait for process to finish
 	err := state.cmd.Wait()
 
-	// Wait for output readers
 	<-done
 	<-done
 
@@ -150,20 +179,16 @@ func (e *gsdExecutor) parseOutput(state *sessionState, r io.Reader, source strin
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Try to parse as JSON event first
 		var event ExecEvent
 		if err := json.Unmarshal([]byte(line), &event); err == nil {
 			event.Timestamp = time.Now()
 			select {
 			case state.events <- event:
 			default:
-				// channel full, drop event
 			}
 			continue
 		}
 
-		// Heuristic: detect gsd-2 unit completion from text output
-		// gsd-2 typically outputs "Unit completed: <name>" or similar patterns
 		event = e.parseTextEvent(line)
 		if event.Type != "" {
 			event.Timestamp = time.Now()
@@ -176,7 +201,6 @@ func (e *gsdExecutor) parseOutput(state *sessionState, r io.Reader, source strin
 }
 
 func (e *gsdExecutor) parseTextEvent(line string) ExecEvent {
-	// Common gsd-2 output patterns
 	switch {
 	case containsAny(line, "auto-mode stopped", "step-mode stopped"):
 		return ExecEvent{Type: "completed"}
@@ -223,7 +247,6 @@ func (e *gsdExecutor) Resume(ctx context.Context, sessionID string, fromUnit str
 		return nil, ErrSessionNotFound
 	}
 
-	// For resume, we run gsd-pi with a resume command
 	events := make(chan ExecEvent, 32)
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -264,7 +287,6 @@ func (e *gsdExecutor) Resume(ctx context.Context, sessionID string, fromUnit str
 func containsAny(s string, substrs ...string) bool {
 	for _, sub := range substrs {
 		if len(s) >= len(sub) {
-			// Simple case-insensitive prefix check
 			for i := 0; i <= len(s)-len(sub); i++ {
 				if equalFold(s[i:i+len(sub)], sub) {
 					return true

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -14,11 +17,30 @@ type rgtAuditor struct {
 }
 
 // New creates an Auditor backed by the rgt CLI.
+// If rgtPath is empty, searches: same directory as running binary, then PATH.
 func New(rgtPath string) Auditor {
 	if rgtPath == "" {
-		rgtPath = "rgt"
+		rgtPath = resolveRgt()
 	}
 	return &rgtAuditor{rgtPath: rgtPath}
+}
+
+func resolveRgt() string {
+	name := "rgt"
+	if runtime.GOOS == "windows" {
+		name = "rgt.exe"
+	}
+
+	// Look next to current binary first
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// Fallback to PATH
+	return name
 }
 
 func (a *rgtAuditor) Init(ctx context.Context, projectRoot string) error {
