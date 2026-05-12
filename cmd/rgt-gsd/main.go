@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gass88wei/rgt-gsd/internal/auditor"
+	"github.com/gass88wei/rgt-gsd/internal/dashboard"
 	"github.com/gass88wei/rgt-gsd/internal/pipeline"
 	"github.com/gass88wei/rgt-gsd/internal/plan"
 	"github.com/gass88wei/rgt-gsd/internal/recovery"
@@ -67,6 +68,7 @@ It does NOT call LLM APIs. It is a toolbox your agent uses to:
 
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(serveCmd())
+	rootCmd.AddCommand(dashCmd())
 	rootCmd.AddCommand(rewindCmd())
 	rootCmd.AddCommand(worktreeCmd())
 	rootCmd.AddCommand(knowledgeCmd())
@@ -122,6 +124,23 @@ func initCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+// --- dash ---
+
+func dashCmd() *cobra.Command {
+	var projectDir, addr string
+	cmd := &cobra.Command{
+		Use:   "dash",
+		Short: "Start local dashboard to view project progress",
+		Long:  "Starts a local web server showing task progress, timeline, knowledge graph, and WIP status.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return dashboard.Start(projectDir, addr)
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	cmd.Flags().StringVarP(&addr, "addr", "a", "127.0.0.1:4747", "listen address")
 	return cmd
 }
 
