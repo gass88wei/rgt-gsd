@@ -59,15 +59,19 @@ func (a *rgtAuditor) Init(ctx context.Context, projectRoot string) error {
 }
 
 func (a *rgtAuditor) Record(ctx context.Context, projectRoot string, input StepInput) (string, error) {
-	// rgt hook reads PostToolUse payload from stdin, writes to .regent/
-	// Hook doesn't output hash on stdout — we get it from rgt log afterwards.
+	// Generate stable session ID if not provided.
+	sessionID := input.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("rgt-gsd-%d", time.Now().Unix())
+	}
+
 	payload := map[string]interface{}{
-		"session_id":   input.SessionID,
-		"tool_name":    input.Cause.ToolName,
-		"tool_use_id":  input.Cause.ToolUseID,
-		"tool_input":   input.Cause.ArgsJSON,
+		"session_id":    sessionID,
+		"tool_name":     input.Cause.ToolName,
+		"tool_use_id":   input.Cause.ToolUseID,
+		"tool_input":    input.Cause.ArgsJSON,
 		"tool_response": input.Cause.ResultJSON,
-		"cwd":          projectRoot,
+		"cwd":           projectRoot,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
@@ -79,11 +83,10 @@ func (a *rgtAuditor) Record(ctx context.Context, projectRoot string, input StepI
 		return "", fmt.Errorf("rgt record: %w: %s", err, string(out))
 	}
 
-	// rgt hook succeeds silently. Get the latest step hash.
-	steps, logErr := a.Log(ctx, projectRoot, "")
+	// rgt hook succeeds silently. Get the latest step hash for this session.
+	steps, logErr := a.Log(ctx, projectRoot, sessionID)
 	if logErr != nil || len(steps) == 0 {
-		// Return empty — caller can handle
-		return "", nil
+		return "", fmt.Errorf("rgt record: hook succeeded but log returned no step: %w", logErr)
 	}
 	return steps[0].Hash, nil
 }
@@ -125,7 +128,12 @@ func (a *rgtAuditor) Log(ctx context.Context, projectRoot string, sessionID stri
 		return nil, fmt.Errorf("rgt log: %w: %s", err, string(out))
 	}
 
-	if len(out) == 0 || strings.TrimSpace(string(out)) == "No sessions found." {
+	outStr := strings.TrimSpace(string(out))
+	if len(out) == 0 || outStr == "No sessions found." {
+		return nil, nil
+	}
+	// If rgt returns a plain text error
+	if !strings.HasPrefix(outStr, "{") {
 		return nil, nil
 	}
 	// rgt log --json returns {"session_id":"...","steps":[...]}

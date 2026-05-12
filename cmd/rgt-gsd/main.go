@@ -429,15 +429,10 @@ what prompt caused it, and the diff. Use when debugging a failure.`,
 			hash := args[0]
 			aud := auditor.New("")
 
-			steps, err := aud.Log(ctx, projectDir, "")
-			if err != nil {
-				return err
-			}
-
-			found := false
+			// Try log first for metadata
+			steps, _ := aud.Log(ctx, projectDir, "")
 			for _, s := range steps {
 				if strings.HasPrefix(s.Hash, hash) {
-					found = true
 					fmt.Printf("Step:     %s\n", s.Hash)
 					fmt.Printf("Tool:     %s\n", s.Cause.ToolName)
 					fmt.Printf("When:     %s\n", s.Timestamp.Format("2006-01-02 15:04:05"))
@@ -445,15 +440,13 @@ what prompt caused it, and the diff. Use when debugging a failure.`,
 					break
 				}
 			}
-			if !found {
-				return fmt.Errorf("step %s not found in log", hash)
-			}
 
+			// Always try rgt show — source of truth
 			showOut, err := runCmdOut(ctx, projectDir, "rgt", "show", hash)
-			if err == nil {
-				fmt.Println(showOut)
+			if err != nil {
+				return fmt.Errorf("step %s not found: %w", hash, err)
 			}
-
+			fmt.Println(showOut)
 			return nil
 		},
 	}
