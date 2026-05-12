@@ -43,6 +43,13 @@ func runCmdOut(ctx context.Context, dir, name string, args ...string) (string, e
 	return strings.TrimSpace(string(out)), err
 }
 
+func runCmdRaw(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "rgt-gsd",
@@ -52,6 +59,7 @@ func main() {
 It does NOT call LLM APIs. It is a toolbox your agent uses to:
   - Archive completed tasks (archive)
   - Inspect step archives (inspect)
+  - Rewind files on failure (rewind)
   - Trace code to prompts (blame)
   - Track project progress (plan)
   - Serve MCP tools (serve)`,
@@ -59,6 +67,7 @@ It does NOT call LLM APIs. It is a toolbox your agent uses to:
 
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(serveCmd())
+	rootCmd.AddCommand(rewindCmd())
 	rootCmd.AddCommand(archiveCmd())
 	rootCmd.AddCommand(stepCmd())
 	rootCmd.AddCommand(inspectCmd())
@@ -127,6 +136,64 @@ func serveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+// --- rewind ---
+
+func rewindCmd() *cobra.Command {
+	var projectDir string
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "rewind <hash>",
+		Short: "Restore files to a previous step",
+		Long:  "Uses git to restore project files to the state of a previous rgt-gsd step. Each archive creates a git commit linked to the step hash.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			hash := args[0]
+
+			// Find the git commit containing this step hash
+			prefix := hash
+			if len(prefix) > 12 {
+				prefix = prefix[:12]
+			}
+			commitHash, err := runCmdOut(ctx, projectDir, "git", "log", "--oneline", "--grep", prefix, "-1", "--format=%H")
+			if err != nil || commitHash == "" {
+				return fmt.Errorf("no git commit found for step %s", hash)
+			}
+
+			if dryRun {
+				diff, _ := runCmdOut(ctx, projectDir, "git", "diff", "--stat", commitHash, "HEAD", "--", ".", ":!.regent/")
+				if diff != "" {
+					fmt.Println("--- would undo these changes ---")
+					fmt.Println(diff)
+				} else {
+					fmt.Println("No changes to undo.")
+				}
+				return nil
+			}
+
+			fmt.Printf("Restoring files to: %s\n", commitHash[:12])
+			fmt.Print("This will overwrite working tree files. Continue? [y/N]: ")
+			var answer string
+			_, _ = fmt.Scanln(&answer)
+			if answer != "y" && answer != "Y" {
+				fmt.Println("Canceled.")
+				return nil
+			}
+
+			// git checkout the commit's files (not the whole tree, just tracked files)
+			out, err := runCmdRaw(ctx, projectDir, "git", "checkout", commitHash, "--", ".")
+			if err != nil {
+				return fmt.Errorf("rewind failed: %w: %s", err, out)
+			}
+			fmt.Println("Rewind complete. Run 'git status' to see changes.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview what would change")
 	return cmd
 }
 
