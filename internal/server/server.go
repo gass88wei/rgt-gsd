@@ -175,6 +175,7 @@ var tools = []toolDefinition{
 	{Name: "rgt_gsd_log", Description: "View step history", InputSchema: inputSchema{Type: "object", Properties: map[string]property{"limit": {Type: "number", Description: "Max steps (default 20)"}, "grep": {Type: "string", Description: "Filter by task name containing text"}}}},
 	{Name: "rgt_gsd_recover", Description: "Analyze an error and suggest recovery action", InputSchema: inputSchema{Type: "object", Properties: map[string]property{"error_type": {Type: "string", Description: "tool_schema|network|deterministic|provider|policy_block|worktree_invalid|unknown"}, "message": {Type: "string", Description: "Error message"}}, Required: []string{"error_type"}}},
 	{Name: "rgt_gsd_rewind", Description: "Restore files to a previous step", InputSchema: inputSchema{Type: "object", Properties: map[string]property{"hash": {Type: "string", Description: "Step hash to rewind to"}}, Required: []string{"hash"}}},
+	{Name: "rgt_gsd_context_new", Description: "Start a fresh context window for the next task. Archives current state and shows what to do next.", InputSchema: inputSchema{Type: "object", Properties: map[string]property{}}},
 	{Name: "rgt_gsd_health", Description: "Check workspace + rgt status", InputSchema: inputSchema{Type: "object", Properties: map[string]property{}}},
 }
 
@@ -347,6 +348,17 @@ func (s *Server) callTool(name string, args json.RawMessage) toolResult {
 			return errResult(err.Error())
 		}
 		return okResult("Rewind complete.")
+
+	case "rgt_gsd_context_new":
+		// Get next task and current WIP status
+		step, _ := s.pln.Next(s.projectDir)
+		wipInfo := ""
+		if step.Type != "done" {
+			wipInfo = fmt.Sprintf("\nNext: [%s] %s", step.Type, step.Description)
+		} else {
+			wipInfo = "\nAll tasks completed."
+		}
+		return okResult(fmt.Sprintf("Context reset. Focus on ONE task only.%s\nKeep context under 20K tokens. Use rgt_gsd_archive when done.", wipInfo))
 
 	case "rgt_gsd_health":
 		clean, err := s.ws.IsClean(ctx)
