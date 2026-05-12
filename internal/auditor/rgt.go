@@ -58,17 +58,19 @@ func (a *rgtAuditor) Init(ctx context.Context, projectRoot string) error {
 }
 
 func (a *rgtAuditor) Record(ctx context.Context, projectRoot string, input StepInput) (string, error) {
-	// rgt hook --session <id> --cause <json> --transcript <json>
-	causeJSON, _ := json.Marshal(input.Cause)
-	transcriptJSON, _ := json.Marshal(input.Transcript)
+	// rgt hook reads payload from stdin (Claude Code PostToolUse format)
+	payload := map[string]interface{}{
+		"session_id": input.SessionID,
+		"tool_name":  input.Cause.ToolName,
+		"tool_use_id": input.Cause.ToolUseID,
+		"args":       input.Cause.ArgsJSON,
+		"result":     input.Cause.ResultJSON,
+	}
+	payloadJSON, _ := json.Marshal(payload)
 
-	cmd := exec.CommandContext(ctx, a.rgtPath,
-		"hook",
-		"--session", input.SessionID,
-		"--cause", string(causeJSON),
-		"--transcript", string(transcriptJSON),
-	)
+	cmd := exec.CommandContext(ctx, a.rgtPath, "hook")
 	cmd.Dir = projectRoot
+	cmd.Stdin = strings.NewReader(string(payloadJSON))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("rgt record: %w: %s", err, string(out))
@@ -101,7 +103,7 @@ func (a *rgtAuditor) Blame(ctx context.Context, projectRoot string, filePath str
 }
 
 func (a *rgtAuditor) Log(ctx context.Context, projectRoot string, sessionID string) ([]Step, error) {
-	args := []string{"log", "--format", "json"}
+	args := []string{"log", "--json"}
 	if sessionID != "" {
 		args = append(args, "--session", sessionID)
 	}
@@ -114,6 +116,9 @@ func (a *rgtAuditor) Log(ctx context.Context, projectRoot string, sessionID stri
 	}
 
 	var steps []Step
+	if len(out) == 0 || strings.TrimSpace(string(out)) == "No sessions found." {
+		return steps, nil
+	}
 	if err := json.Unmarshal(out, &steps); err != nil {
 		// Fallback: parse line by line
 		return nil, fmt.Errorf("rgt log parse: %w", err)
