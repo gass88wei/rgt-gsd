@@ -13,6 +13,12 @@ import (
 	"github.com/gass88wei/rgt-gsd/internal/workspace"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "rgt-gsd",
@@ -28,12 +34,25 @@ Run 'rgt-gsd audit blame' to trace which prompt wrote a specific line of code.`,
 	rootCmd.AddCommand(auditCmd())
 	rootCmd.AddCommand(execCmd())
 	rootCmd.AddCommand(healthCmd())
+	rootCmd.AddCommand(versionCmd())
 
 	cobra.EnableCommandSorting = false
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Show version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("rgt-gsd %s\n", version)
+			fmt.Printf("  commit: %s\n", commit)
+			fmt.Printf("  date:   %s\n", date)
+		},
 	}
 }
 
@@ -135,7 +154,6 @@ func auditBlameCmd() *cobra.Command {
 			ctx := cmd.Context()
 			aud := auditor.New("rgt")
 
-			// Parse file:line
 			var filePath string
 			var line int
 			if _, err := fmt.Sscanf(args[0], "%[^:]:%d", &filePath, &line); err != nil {
@@ -275,15 +293,6 @@ func healthCmd() *cobra.Command {
 				fmt.Printf("gsd-pi:    FAIL — %v\n", err)
 			} else {
 				fmt.Println("gsd-pi:    OK")
-			}
-
-			// Check rgt
-			aud := auditor.New("rgt")
-			if err := aud.Init(ctx, projectDir); err != nil {
-				// Init might fail if .regent already exists — that's OK
-				fmt.Printf("rgt:       FAIL — %v\n", err)
-			} else {
-				fmt.Println("rgt:       OK")
 			}
 
 			return nil
