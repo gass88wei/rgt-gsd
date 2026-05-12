@@ -3,6 +3,7 @@ package plan
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -56,20 +57,53 @@ func New() Plan {
 	return &filePlan{}
 }
 
-func (p *filePlan) Show(projectRoot string) (Status, error) {
+func (p *filePlan) readRoadmap(projectRoot string) (string, error) {
+	// Try ROADMAP/ directory first
+	dirPath := filepath.Join(projectRoot, "ROADMAP")
+	if entries, err := os.ReadDir(dirPath); err == nil {
+		var files []string
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			files = append(files, e.Name())
+		}
+		if len(files) > 0 {
+			sort.Strings(files)
+			var parts []string
+			for _, f := range files {
+				data, err := os.ReadFile(filepath.Join(dirPath, f))
+				if err != nil {
+					continue
+				}
+				parts = append(parts, string(data))
+			}
+			return strings.Join(parts, "\n"), nil
+		}
+	}
+
+	// Fallback to single ROADMAP.md
 	data, err := os.ReadFile(filepath.Join(projectRoot, "ROADMAP.md"))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (p *filePlan) Show(projectRoot string) (Status, error) {
+	data, err := p.readRoadmap(projectRoot)
 	if err != nil {
 		return Status{}, err
 	}
-	return parseRoadmap(string(data)), nil
+	return parseRoadmap(data), nil
 }
 
 func (p *filePlan) Next(projectRoot string) (Step, error) {
-	data, err := os.ReadFile(filepath.Join(projectRoot, "ROADMAP.md"))
+	data, err := p.readRoadmap(projectRoot)
 	if err != nil {
 		return Step{}, err
 	}
-	return findNext(string(data)), nil
+	return findNext(data), nil
 }
 
 func parseRoadmap(content string) Status {
@@ -117,6 +151,27 @@ func parseRoadmap(content string) Status {
 }
 
 func (p *filePlan) MarkDone(projectRoot string, taskName string) error {
+	// Try ROADMAP/ directory first
+	dirPath := filepath.Join(projectRoot, "ROADMAP")
+	if entries, err := os.ReadDir(dirPath); err == nil && len(entries) > 0 {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(dirPath, e.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			newContent := markDone(string(data), taskName)
+			if newContent != string(data) {
+				return os.WriteFile(path, []byte(newContent), 0o644)
+			}
+		}
+		return nil // no match found
+	}
+
+	// Fallback to single ROADMAP.md
 	path := filepath.Join(projectRoot, "ROADMAP.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -125,7 +180,7 @@ func (p *filePlan) MarkDone(projectRoot string, taskName string) error {
 	content := string(data)
 	newContent := markDone(content, taskName)
 	if newContent == content {
-		return nil // no change — already done
+		return nil
 	}
 	return os.WriteFile(path, []byte(newContent), 0o644)
 }

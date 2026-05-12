@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/gass88wei/rgt-gsd/internal/pipeline"
 	"github.com/gass88wei/rgt-gsd/internal/plan"
 	"github.com/gass88wei/rgt-gsd/internal/recovery"
+	"github.com/gass88wei/rgt-gsd/internal/server"
 	"github.com/gass88wei/rgt-gsd/internal/workspace"
 )
 
@@ -46,16 +49,17 @@ func main() {
 		Long: `rgt-gsd combines re_gent (version control for AI agents) with plan tracking and recovery.
 
 It does NOT call LLM APIs. It is a toolbox your agent uses to:
-  - Archive completed tasks (archive + plan)
-  - Inspect step archives when debugging (inspect)
-  - Record what it did (record)
+  - Archive completed tasks (archive)
+  - Inspect step archives (inspect)
   - Trace code to prompts (blame)
-  - Rewind on failure (rewind)
-  - Track project progress (plan)`,
+  - Track project progress (plan)
+  - Serve MCP tools (serve)`,
 	}
 
 	rootCmd.AddCommand(initCmd())
+	rootCmd.AddCommand(serveCmd())
 	rootCmd.AddCommand(archiveCmd())
+	rootCmd.AddCommand(stepCmd())
 	rootCmd.AddCommand(inspectCmd())
 	rootCmd.AddCommand(recordCmd())
 	rootCmd.AddCommand(auditCmd())
@@ -103,6 +107,22 @@ func initCmd() *cobra.Command {
 			}
 			fmt.Printf("rgt-gsd initialized in %s\n", projectDir)
 			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+// --- serve ---
+
+func serveCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start MCP server over stdio (for agent framework integration)",
+		Long:  "Starts an MCP server reading JSON-RPC from stdin, writing to stdout. Configure your agent framework's MCP settings to call rgt-gsd serve.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return server.ServeMCP(projectDir)
 		},
 	}
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
@@ -162,27 +182,21 @@ func auditCmd() *cobra.Command {
 func auditBlameCmd() *cobra.Command {
 	var projectDir string
 	cmd := &cobra.Command{
-		Use:   "blame <file>:<line>",
-		Short: "Show which step introduced a specific line",
+		Use:   "blame <file>",
+		Short: "Show which step last modified a file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			aud := auditor.New("")
-			// Use LastIndex so paths with colons (like C:\...) work correctly
-			lastColon := strings.LastIndex(args[0], ":")
-			if lastColon < 0 {
-				return fmt.Errorf("expected format <file>:<line>, got %s", args[0])
-			}
-			filePath := args[0][:lastColon]
-			line, err := strconv.Atoi(args[0][lastColon+1:])
-			if err != nil {
-				return fmt.Errorf("expected format <file>:<line>, got %s", args[0])
-			}
-			entry, err := aud.Blame(ctx, projectDir, filePath, line)
+			entry, err := aud.Blame(ctx, projectDir, args[0], 0)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("%s:%d  %s  %s\n", filePath, line, entry.StepHash[:8], entry.Cause.ToolName)
+			shortHash := entry.StepHash
+			if len(shortHash) > 12 {
+				shortHash = shortHash[:12]
+			}
+			fmt.Printf("%s: last modified by %s (%s)\n", args[0], shortHash, entry.Cause.ToolName)
 			return nil
 		},
 	}
@@ -191,8 +205,9 @@ func auditBlameCmd() *cobra.Command {
 }
 
 func auditLogCmd() *cobra.Command {
-	var projectDir, sessionID string
+	var projectDir, sessionID, grep string
 	var detail bool
+	var limit int
 	cmd := &cobra.Command{
 		Use:   "log",
 		Short: "Show step history",
@@ -203,7 +218,11 @@ func auditLogCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			count := 0
 			for _, step := range steps {
+				if grep != "" && !strings.Contains(step.Cause.ArgsJSON, grep) && !strings.Contains(step.Cause.ToolName, grep) {
+					continue
+				}
 				fmt.Printf("%s  %s  %s\n", step.Hash[:8], step.Cause.ToolName, step.Timestamp.Format("15:04:05"))
 				if detail {
 					showOut, _ := runCmdOut(ctx, projectDir, "rgt", "show", step.Hash)
@@ -215,6 +234,10 @@ func auditLogCmd() *cobra.Command {
 					}
 					fmt.Println()
 				}
+				count++
+				if limit > 0 && count >= limit {
+					break
+				}
 			}
 			return nil
 		},
@@ -222,6 +245,8 @@ func auditLogCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
 	cmd.Flags().StringVarP(&sessionID, "session", "s", "", "session ID filter")
 	cmd.Flags().BoolVar(&detail, "detail", false, "show full step details")
+	cmd.Flags().StringVar(&grep, "grep", "", "filter by task name")
+	cmd.Flags().IntVarP(&limit, "limit", "n", 0, "max steps to show")
 	return cmd
 }
 
@@ -234,6 +259,8 @@ func planCmd() *cobra.Command {
 	}
 	cmd.AddCommand(planShowCmd())
 	cmd.AddCommand(planNextCmd())
+	cmd.AddCommand(planStartCmd())
+	cmd.AddCommand(planStatusCmd())
 	return cmd
 }
 
@@ -295,6 +322,61 @@ func planNextCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
 	return cmd
+}
+
+func planStartCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use:   "start <task>",
+		Short: "Mark a task as work-in-progress",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return saveWIP(projectDir, args[0])
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+func planStatusCmd() *cobra.Command {
+	var projectDir string
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show current WIP (work-in-progress)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := loadWIP(projectDir)
+			if err != nil || w.Task == "" {
+				fmt.Println("No task in progress.")
+				return nil
+			}
+			fmt.Printf("WIP: %s (started %s)\n", w.Task, w.StartedAt)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+// WIP state helpers
+type wipData struct {
+	Task      string `json:"task"`
+	StartedAt string `json:"started_at"`
+}
+
+func saveWIP(dir, task string) error {
+	w := wipData{Task: task, StartedAt: fmt.Sprintf("%s", time.Now().Format("15:04:05"))}
+	data, _ := json.Marshal(w)
+	os.MkdirAll(filepath.Join(dir, ".rgt-gsd"), 0755)
+	return os.WriteFile(filepath.Join(dir, ".rgt-gsd", "wip.json"), data, 0644)
+}
+
+func loadWIP(dir string) (wipData, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ".rgt-gsd", "wip.json"))
+	if err != nil {
+		return wipData{}, err
+	}
+	var w wipData
+	return w, json.Unmarshal(data, &w)
 }
 
 // --- recover ---
@@ -377,6 +459,61 @@ func healthCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	return cmd
+}
+
+// --- step ---
+
+func stepCmd() *cobra.Command {
+	var projectDir, task string
+	var done bool
+	cmd := &cobra.Command{
+		Use:   "step <description>",
+		Short: "Record a step (optionally associate with a task, optionally complete it)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			desc := args[0]
+			p := plan.New()
+			aud := auditor.New("")
+			toolName := "step"
+			if done {
+				toolName = "archive"
+			}
+			hash, err := aud.Record(ctx, projectDir, auditor.StepInput{
+				Cause: auditor.Cause{ToolName: toolName, ArgsJSON: desc},
+			})
+			if err != nil {
+				return fmt.Errorf("record: %w", err)
+			}
+			shortHash := hash
+			if len(shortHash) > 12 {
+				shortHash = shortHash[:12]
+			}
+			if task != "" && done {
+				if err := p.MarkDone(projectDir, task); err != nil {
+					return fmt.Errorf("mark done: %w", err)
+				}
+				commitMsg := fmt.Sprintf("archive: %s [%s]", task, shortHash)
+				runGit(projectDir, "add", "-A")
+				runGit(projectDir, "commit", "-m", commitMsg)
+				fmt.Printf("archived [%s] %s\n", shortHash, task)
+			} else if task != "" {
+				commitMsg := fmt.Sprintf("step: %s [%s]", desc, shortHash)
+				runGit(projectDir, "add", "-A")
+				runGit(projectDir, "commit", "-m", commitMsg)
+				fmt.Printf("step %s [%s]\n", shortHash, desc)
+			} else if done {
+				fmt.Printf("archived [%s] %s\n", shortHash, desc)
+			} else {
+				fmt.Printf("step %s recorded\n", shortHash)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&projectDir, "project", "d", ".", "project directory")
+	cmd.Flags().StringVarP(&task, "task", "t", "", "associate with this task")
+	cmd.Flags().BoolVar(&done, "done", false, "mark task as complete")
 	return cmd
 }
 
@@ -468,7 +605,7 @@ what prompt caused it, and the diff. Use when debugging a failure.`,
 			}
 			fmt.Println(showOut)
 
-			// Git diff between step commits if available
+			// Git diff: filter out .regent/ and binary noise
 			prefix := hash
 			if len(prefix) > 12 {
 				prefix = prefix[:12]
@@ -476,8 +613,8 @@ what prompt caused it, and the diff. Use when debugging a failure.`,
 			gitLog, _ := runCmdOut(ctx, projectDir, "git", "log", "--oneline", "--grep", prefix, "-1")
 			if gitLog != "" {
 				fmt.Println()
-				fmt.Println("--- git diff ---")
-				diff, _ := runCmdOut(ctx, projectDir, "git", "diff", "--stat", "HEAD~1", "HEAD")
+				fmt.Println("--- files changed ---")
+				diff, _ := runCmdOut(ctx, projectDir, "git", "diff", "--stat", "HEAD~1", "HEAD", "--", ".", ":!.regent/", ":!.rgt-gsd/", ":!*.exe", ":!*.json", ":!go.sum")
 				if diff != "" {
 					fmt.Println(diff)
 				}
